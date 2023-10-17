@@ -1,2 +1,1 @@
-# data_mining
-Tarefas da disciplina Mineiração de Dados
+Para que possa compilar o código, é preciso baixar o seguinte dataset: https://www.kaggle.com/datasets/hugodarwood/epirecipes
