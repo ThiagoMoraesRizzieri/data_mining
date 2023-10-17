@@ -1,0 +1,537 @@
+---
+title: "Atividade-DataMining"
+author: "Thiago Moraes Rizzieri"
+date: "`r Sys.Date()`"
+output: 
+  rmdformats::readthedown
+mainfont: Courier New
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Pacotes utilizados.
+
+rmdformats: para o estilo do markdown.
+
+dplyr, tidyr e reshape2: para manipulação dos dados.
+
+ggplot2: pacote para criar gráficos.
+
+rpart: para criar árvore de decisão.
+
+```{r}
+library("rmdformats")
+library("dplyr")
+library("tidyr")
+library("ggplot2")
+library("rpart")
+library("reshape2")
+```
+
+# Sobre o dataset.
+
+![Image](https://www.epicurious.com/static/img/misc/epicurious-social-logo.png)
+
+
+Estarei utilizando o [dataset de receitas do site Epicurious](https://www.kaggle.com/datasets/hugodarwood/epirecipes) com valores nutricionais, avaliações da receita e as diferentes categorias que a receita se encaixa.
+
+Este dataset possui algumas variáveis numéricas nutricionais e diversas variáveis categóricas do tipo dummy. Por isso, acredito que todas as análises poderiam ser contempladas neste único dataset, quebrando o dataset nas variáveis numéricas e categóricas.
+
+```{r}
+df <- read.csv("epi_r.csv")
+head(df[,1:7])
+```
+
+# Pré-processamento de dados.
+
+## Valores NA.
+
+Primeiramente, iremos verificar quantos valores NA há no dataset.
+
+```{r}
+sum(apply(df, 1, anyNA))
+```
+Vimos que há diferentes formas para tratarmos isso. Uma das mais populares e simples é simplesmente removendo todas elas. Como ainda teremos muitos dados no nosso dataset, acredito que não teremos tanta perda com essa operação.
+
+Podemos verificar a quantidade de valores antes e depois de retirar os valores ausentes.
+
+```{r}
+nrow(df)
+df <- drop_na(df)
+nrow(df)
+```
+## Valores duplicados.
+
+Outro problema comum é a presença de valores duplicados. Podemos utilizar o título da receita para verificar e removê-los.
+
+```{r}
+nrow(df)
+df <- subset(df, !duplicated(title))
+nrow(df)
+```
+
+## Variáveis numéricas
+
+Todas as variáveis deste dataframe, com exceção do título, são valores numéricos, mas nem todos eles iremos tratar como variáveis numéricas.
+
+Talvez as mais chamativas sejam as variáveis binárias, apresetando apenas valores 0 ou 1. Iremos tratar todas elas como variáveis do tipo fator.
+
+Além disso, pude perceber que a variável rating também não se comporta da mesma forma como as demais variáveis numéricas. Esta variável sempre assume um valor dentre 8 possibilidades. Podemos verificar isso utilizando a função unique().
+
+```{r}
+unique(sort(df$rating))
+```
+Acredito que exista diferentes formas de se trabalhar com essa variável, podendo manter como uma variável numérica discreta ou considerando como uma variável categórica ordinal. Resolvi optar pela segunda opção e trabalhar como uma variável do tipo fator, pois no R podemos atribuir uma ordem em variáveis do tipo fator.
+
+Assim, do dataframe temos as seguintes variáveis numéricas.
+
+```{r}
+df_num <- df[,3:6]
+head(df_num)
+```
+
+Para continuarmos tratando das variáveis numéricas, como fazer um feature selection ou aplicar transformações, precisamos verificar se há presença de outliers para não enviesar nossas análises.
+
+Vamos primeiramente observar os boxplots de cada variável numérica.
+
+```{r}
+ggplot(df_num,aes(y=calories))+
+  geom_boxplot()
+```
+```{r}
+ggplot(df_num,aes(y=protein))+
+  geom_boxplot()
+```
+
+```{r}
+ggplot(df_num,aes(y=fat))+
+  geom_boxplot()
+```
+
+```{r}
+ggplot(df_num,aes(y=sodium))+
+  geom_boxplot()
+```
+
+Podemos observar que há uma presença muito extrema de outliers nessas variáveis que com certeza afetarão futuras análises.
+
+Uma das formas de tratar os valores outliers seria aplicando o método IQR (intervalo interquartil) como visto em aula.
+
+Vale ressaltar que como iremos remover esses valores outliers, precisaremos remover a linha toda do dataframe original, para que não tenha esta linha nas variáveis numéricas quanto nas variáveis categóricas.
+
+Primeiramente, iremos criar uma função que transforme todos os outliers de cada variável em um valor NA para que possamos remover em seguida.
+
+```{r}
+replace_na_outliers_iqr <- function(x) {
+  Q1 <- quantile(x, 0.25)
+  Q3 <- quantile(x, 0.75)
+  limite_inferior <- Q1 - 1.5 * IQR(x)
+  limite_superior <- Q3 + 1.5 * IQR(x)
+  x[x < limite_inferior | x > limite_superior] <- NA  
+  return(x)
+}
+```
+
+
+```{r}
+nrow(df)
+df[,3:6] <- as.data.frame(apply(df_num, 2, replace_na_outliers_iqr))
+df <- drop_na(df)
+nrow(df)
+
+df_num <- df[,3:6]
+```
+Agora podemos selecionar novamente as variáveis numéricas do dataset e verificar o boxplot de cada coluna.
+
+```{r}
+ggplot(df_num,aes(y=calories))+
+  geom_boxplot()
+```
+
+```{r}
+ggplot(df_num,aes(y=protein))+
+  geom_boxplot()
+```
+
+```{r}
+ggplot(df_num,aes(y=fat))+
+  geom_boxplot()
+```
+
+```{r}
+ggplot(df_num,aes(y=sodium))+
+  geom_boxplot()
+```
+
+Podemos ver que ainda há valores bem distantes da mediana dos dados, mas não necessariamente sejam outliers extremos que devemos tratar. Por isso, podemos manter os valores como estão.
+
+## Variáveis categóricas.
+
+As demais variáveis que não sejam o título ou as numéricas, estaremos encaixando como variáveis categóricas.
+
+```{r}
+df_cat_total <- df[,c(2,7:ncol(df))]
+```
+
+Porém, como todas elas possuem valores numéricos, à primeira vista o R identifica todas elas como variáveis numéricas.
+
+```{r}
+str(df_cat_total[1:6])
+```
+Como iremos trabalhar com correlções em breve, pode ser útil manter como variáveis numéricas por mais tempo, mas até o fim do trabalho devemos transformar tudo em variável do tipo fator.
+
+# Feature selection
+
+Com os dados limpos, podemos trabalhar com a parte da seleção de variáveis.
+
+## Variáveis numéricas
+
+Uma das formas de selecionar variáveis numéricas é verificando se há variáveis altamente correlacionadas entre si.
+
+Primeiramente, calculamos todas as combinações de correlações entre as variáveis numéricas dadas.
+
+```{r}
+corr_mat <- round(cor(df_num),3)
+melted_corr_mat <- melt(corr_mat)
+head(melted_corr_mat)
+```
+Em seguida, plotamos um gráfico de calor para melhorar nossa visualização das correlações.
+
+```{r}
+ggplot(data = melted_corr_mat, aes(x=Var1, y=Var2,
+                                   fill=value)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "red", high = "blue", mid = "white", midpoint = 0, limit = c(-1, 1), space = "Lab",
+                       name = "Correlação") +
+  geom_text(aes(Var2, Var1, label = value),
+            color = "black", size = 4) + 
+  theme(axis.text.x = element_text(angle=45, vjust = 1, hjust = 1)) +
+  labs(title = "Correlação entre as variáveis numéricas") +
+  theme(legend.title=element_text(face="bold"),
+        plot.title= element_text(size=14,
+                                 face="bold"),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank())
+```
+
+Podemos observar que há fortes relações positivas entre as variáveis nutricionais entre si. Em especial, há uma forte correlçao entre a variável calories e a variável fat, de 0.837.
+
+Neste momento, é preciso realizar a decisão entre manter as variáveis ou remover uma delas. Dependendo do que é feito, é preciso que uma variável seja omitida para que não exista viés ao aplicar algum modelo. Mas isso ainda depende da relevância das variáveis para o estudo.
+
+Como cada valor nutricional possui grande significado para uma refeição e como não temos nenhum objetivo mais profundo no momento, acredito que a melhor decisão seja manter todas essas variáveis presentes.
+
+## Variáveis categóricas
+
+Como há inúmeras variáveis categóricas neste dataset, esta é uma etapa crucial no projeto. Veremos como podemos selecionar nossas variáveis.
+
+### Seleção manual
+
+Dependendo do objetivo do estudo, já existem variáveis de interesse que devem ser utilizadas, como por exemplo se o o objetivo no estudo é sobre a comparação dos valores nutricionais e avaliações entre receitas veganas e não veganas, assim a categoria vegan deve ser inclusa.
+
+Vale ressaltar que é interessante que exista um balanceamento de classes quando se aplica algum modelo envolvendo variáveis binárias, ou seja, a proporção de valores 0 e 1 deve ser próxima para que não tenha um viés de amostragem. Podemos dar uma olhada nas 30 variáveis que mais aparecem:
+
+```{r}
+soma <- sort(apply(df[,-c(1,2,3,4,5,6)],2,sum),decreasing = TRUE)
+head(soma, n = 30)
+```
+
+Deixarei um exemplo de como essa escolha manual poderia ser feita. Vou selecionar algumas variáveis categóricas interessantes. Irei escolher as variáveis gourmet, winter, dessert, summer, fruit e vegan.
+
+```{r}
+cat_names <- c("rating","gourmet","winter","dessert","summer","fruit","vegan")
+df_cat_manual <- df_cat_total[,cat_names]
+```
+
+### Seleção por ganho de informação
+
+Outra forma interessante de feature selection de variáveis categóricas é por meio de ganho de informação. Porém, precisamos ter definido uma variável alvo para isso. Utilizaremos a variável rating.
+
+Dessa forma, podemos aplicar um modelo de árvore de decisão para escolher as variáveis categóricas que são mais informativas em relação à avaliação da receita.
+
+Aplicamos uma árvore de decisão usando o critério de entropia.
+
+```{r}
+arvore_decisao <- rpart(rating ~ ., 
+                        data = df_cat_total, 
+                        method = "class", 
+                        parms = list(split = "information"))
+```
+
+Em seguida, podemos observar quais são as variáveis que mais impactam na avaliação.
+
+```{r}
+print(arvore_decisao$variable.importance)
+```
+
+Acabamos chegando em variáveis que falam sobre bebidas alcoólicas no geral. Ou seja, possivelmente a distribuição de avaliações entre refeições e bebidas é bem diferente.
+
+```{r}
+df_cat_ad <- df_cat_total[,names(arvore_decisao$variable.importance)]
+df_cat_ad <- cbind(df_cat_total$rating,df_cat_ad)
+names(df_cat_ad)[1]<- "rating"
+```
+
+### Correlação entre variáveis categóricas
+
+Como visto em aula, existem diferentes tipos de correlação. Um deles é a correlação de Kendall que pode ser utilizada entre variáveis categóricas. Assim, para complementar a seleção de atributos, podemos verificar a correlação das variáveis entre si.
+
+Vamos primeiramente analisar as variáveis selecionadas manualmente.
+
+```{r}
+corr_mat <- round(cor(df_cat_manual,method = "kendall"),3)
+melted_corr_mat <- melt(corr_mat)
+head(melted_corr_mat)
+```
+
+```{r}
+ggplot(data = melted_corr_mat, aes(x=Var1, y=Var2,
+                                   fill=value)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "red", high = "blue", mid = "white", midpoint = 0, limit = c(-1, 1), space = "Lab",
+                       name = "Correlação") +
+  geom_text(aes(Var2, Var1, label = value),
+            color = "black", size = 4) + 
+  theme(axis.text.x = element_text(angle=45, vjust = 1, hjust = 1)) +
+  labs(title = "Correlação entre as variáveis numéricas") +
+  theme(legend.title=element_text(face="bold"),
+        plot.title= element_text(size=14,
+                                 face="bold"),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank())
+```
+Vemos que praticamente não há correlações. Apenas uma fraca correlação positiva entre as variáveis fruta e sobremesa e uma fraca correlação negativa entre as variáveis verão e inverno.
+
+Em seguida, podemos analisar as variáveis selecionadas pela árvore de decisão.
+
+```{r}
+corr_mat <- round(cor(df_cat_ad,method = "kendall"),3)
+melted_corr_mat <- melt(corr_mat)
+head(melted_corr_mat)
+```
+
+```{r}
+ggplot(data = melted_corr_mat, aes(x=Var1, y=Var2,
+                                   fill=value)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "red", high = "blue", mid = "white", midpoint = 0, limit = c(-1, 1), space = "Lab",
+                       name = "Correlação") +
+  geom_text(aes(Var2, Var1, label = value),
+            color = "black", size = 4) + 
+  theme(axis.text.x = element_text(angle=45, vjust = 1, hjust = 1)) +
+  labs(title = "Correlação entre as variáveis numéricas") +
+  theme(legend.title=element_text(face="bold"),
+        plot.title= element_text(size=14,
+                                 face="bold"),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank())
+```
+Podemos visualizar que há mais correlações positivas nessas variáveis, mesmo que não sejam tão fortes. As exceções são as variáveis drink e alcoólico que possuem uma forte correlação entre si. 
+
+Neste caso, são variáveis que num contexto de receitas, são praticamente sinônimos então faz sentido retirar uma das variáveis.
+
+Iremos remover a variável drink.
+
+```{r}
+df_cat_ad <- df_cat_ad[,-2]
+```
+
+E agora podemos fazer a mudança nas variáveis. Para tal, iremos aplicar a função mutate() para alterar as variáveis para o tipo fator.
+
+```{r}
+df_cat_total <- df_cat_total %>%
+  mutate(across(where(is.numeric), as.factor))
+str(df_cat_total[1:6])
+
+df_cat_manual <- df_cat_manual %>%
+  mutate(across(where(is.numeric), as.factor))
+str(df_cat_total[1:6])
+
+df_cat_ad <- df_cat_ad %>%
+  mutate(across(where(is.numeric), as.factor))
+str(df_cat_total[1:6])
+```
+
+# Algumas estatísticas e medidas de resumo dos dados;
+
+Podemos visualizar algumas estatísticas básicas de resumo dos dados.
+
+```{r}
+summary(df_num)
+summary(df_cat_manual)
+summary(df_cat_ad)
+```
+
+# Análise exploratória inicial;
+
+Podemos aplicar gráficos de histogramas nas variáveis numéricas e aplicar gráficos de barras nas categóricas para observar suas distribuições.
+
+```{r}
+ggplot(df_num, aes(x = calories, text = paste('Contagem:', ..count..))) + geom_histogram(bins = 30,fill = "#ea6106") + labs(x = "Valores nutricionais", y = "Frequência", title = "Histograma das calorias")+
+ theme(plot.title= element_text(size=14,
+                               color="#ea6106",
+                               face="bold"),
+      axis.title.x = element_text(face="bold",color="#ea6106"),
+      axis.title.y = element_text(face="bold",color="#ea6106"),
+       axis.text.x= element_text(face="bold")) +
+scale_x_continuous(breaks = scales::pretty_breaks(n = 5))
+```
+
+```{r}
+ggplot(df_num, aes(x = protein, text = paste('Contagem:', ..count..))) + geom_histogram(bins = 30,fill = "#b34700") + labs(x = "Valores nutricionais", y = "Frequência", title = "Histograma da proteína")+
+ theme(plot.title= element_text(size=14,
+                               color="#b34700",
+                               face="bold"),
+      axis.title.x = element_text(face="bold",color="#b34700"),
+      axis.title.y = element_text(face="bold",color="#b34700"),
+       axis.text.x= element_text(face="bold")) +
+scale_x_continuous(breaks = scales::pretty_breaks(n = 5))
+```
+
+```{r}
+ggplot(df_num, aes(x = fat, text = paste('Contagem:', ..count..))) + geom_histogram(bins = 30,fill = "#763205") + labs(x = "Valores nutricionais", y = "Frequência", title = "Histograma da gordura")+
+ theme(plot.title= element_text(size=14,
+                               color="#763205",
+                               face="bold"),
+      axis.title.x = element_text(face="bold",color="#763205"),
+      axis.title.y = element_text(face="bold",color="#763205"),
+       axis.text.x= element_text(face="bold")) +
+scale_x_continuous(breaks = scales::pretty_breaks(n = 5))
+```
+
+```{r}
+ggplot(df_num, aes(x = sodium, text = paste('Contagem:', ..count..))) + geom_histogram(bins = 30,fill = "#3A1F05") + labs(x = "Valores nutricionais", y = "Frequência", title = "Histograma do sódio")+
+ theme(plot.title= element_text(size=14,
+                               color="#3A1F05",
+                               face="bold"),
+      axis.title.x = element_text(face="bold",color="#3A1F05"),
+      axis.title.y = element_text(face="bold",color="#3A1F05"),
+       axis.text.x= element_text(face="bold")) +
+scale_x_continuous(breaks = scales::pretty_breaks(n = 5))
+```
+
+```{r}
+ggplot(df_cat_manual, aes(x = rating, text = paste('Contagem:', ..count..))) + geom_bar(fill = "#cc0000") + labs(x = "Quantidades", y = "Frequência", title = "Gráfico do rating")+
+ theme(plot.title= element_text(size=14,
+                               color="#cc0000",
+                               face="bold"),
+      axis.title.x = element_text(face="bold",color="#cc0000"),
+      axis.title.y = element_text(face="bold",color="#cc0000"),
+       axis.text.x= element_text(face="bold"))
+```
+
+```{r}
+ggplot(df_cat_manual, aes(x = gourmet, text = paste('Contagem:', ..count..))) + geom_bar(fill = "#000080") + labs(x = "Quantidades", y = "Frequência", title = "Gráfico das receitas gourmet")+
+ theme(plot.title= element_text(size=14,
+                               color="#000080",
+                               face="bold"),
+      axis.title.x = element_text(face="bold",color="#000080"),
+      axis.title.y = element_text(face="bold",color="#000080"),
+       axis.text.x= element_text(face="bold"))
+```
+
+```{r}
+ggplot(df_cat_manual, aes(x = winter, text = paste('Contagem:', ..count..))) + geom_bar(fill = "#00b3b3") + labs(x = "Quantidades", y = "Frequência", title = "Gráfico das receitas de inverno")+
+ theme(plot.title= element_text(size=14,
+                               color="#00b3b3",
+                               face="bold"),
+      axis.title.x = element_text(face="bold",color="#00b3b3"),
+      axis.title.y = element_text(face="bold",color="#00b3b3"),
+       axis.text.x= element_text(face="bold"))
+```
+
+```{r}
+ggplot(df_cat_manual, aes(x = dessert, text = paste('Contagem:', ..count..))) + geom_bar(fill = "#666600") + labs(x = "Quantidades", y = "Frequência", title = "Gráfico das receitas de sobremesas")+
+ theme(plot.title= element_text(size=14,
+                               color="#666600",
+                               face="bold"),
+      axis.title.x = element_text(face="bold",color="#666600"),
+      axis.title.y = element_text(face="bold",color="#666600"),
+       axis.text.x= element_text(face="bold"))
+```
+
+```{r}
+ggplot(df_cat_manual, aes(x = summer, text = paste('Contagem:', ..count..))) + geom_bar(fill = "#cc3300") + labs(x = "Quantidades", y = "Frequência", title = "Gráfico das receitas de verão")+
+ theme(plot.title= element_text(size=14,
+                               color="#cc3300",
+                               face="bold"),
+      axis.title.x = element_text(face="bold",color="#cc3300"),
+      axis.title.y = element_text(face="bold",color="#cc3300"),
+       axis.text.x= element_text(face="bold"))
+```
+
+```{r}
+ggplot(df_cat_manual, aes(x = fruit, text = paste('Contagem:', ..count..))) + geom_bar(fill = "#003300") + labs(x = "Quantidades", y = "Frequência", title = "Gráfico das receitas que usam frutas")+
+ theme(plot.title= element_text(size=14,
+                               color="#003300",
+                               face="bold"),
+      axis.title.x = element_text(face="bold",color="#003300"),
+      axis.title.y = element_text(face="bold",color="#003300"),
+       axis.text.x= element_text(face="bold"))
+```
+
+```{r}
+ggplot(df_cat_manual, aes(x = vegan, text = paste('Contagem:', ..count..))) + geom_bar(fill = "#196619") + labs(x = "Quantidades", y = "Frequência", title = "Gráfico das refeições veganas")+
+ theme(plot.title= element_text(size=14,
+                               color="#196619",
+                               face="bold"),
+      axis.title.x = element_text(face="bold",color="#196619"),
+      axis.title.y = element_text(face="bold",color="#196619"),
+       axis.text.x= element_text(face="bold"))
+```
+
+```{r}
+ggplot(df_cat_ad, aes(x = alcoholic, text = paste('Contagem:', ..count..))) + geom_bar(fill = "#99003d") + labs(x = "Quantidades", y = "Frequência", title = "Gráfico das receitas alcoólicas")+
+ theme(plot.title= element_text(size=14,
+                               color="#99003d",
+                               face="bold"),
+      axis.title.x = element_text(face="bold",color="#99003d"),
+      axis.title.y = element_text(face="bold",color="#99003d"),
+       axis.text.x= element_text(face="bold"))
+```
+
+```{r}
+ggplot(df_cat_ad, aes(x = cocktail, text = paste('Contagem:', ..count..))) + geom_bar(fill = "#33001a") + labs(x = "Quantidades", y = "Frequência", title = "Gráfico das receitas que envolvem cocktail")+
+ theme(plot.title= element_text(size=14,
+                               color="#33001a",
+                               face="bold"),
+      axis.title.x = element_text(face="bold",color="#33001a"),
+      axis.title.y = element_text(face="bold",color="#33001a"),
+       axis.text.x= element_text(face="bold"))
+```
+
+```{r}
+ggplot(df_cat_ad, aes(x = gin, text = paste('Contagem:', ..count..))) + geom_bar(fill = "#602060") + labs(x = "Quantidades", y = "Frequência", title = "Gráfico das receitas que envolvem gin")+
+ theme(plot.title= element_text(size=14,
+                               color="#602060",
+                               face="bold"),
+      axis.title.x = element_text(face="bold",color="#602060"),
+      axis.title.y = element_text(face="bold",color="#602060"),
+       axis.text.x= element_text(face="bold"))
+```
+
+```{r}
+ggplot(df_cat_ad, aes(x = non.alcoholic, text = paste('Contagem:', ..count..))) + geom_bar(fill = "#330066") + labs(x = "Quantidades", y = "Frequência", title = "Gráfico das receitas não alcoólicas")+
+ theme(plot.title= element_text(size=14,
+                               color="#330066",
+                               face="bold"),
+      axis.title.x = element_text(face="bold",color="#330066"),
+      axis.title.y = element_text(face="bold",color="#330066"),
+       axis.text.x= element_text(face="bold"))
+```
+
+```{r}
+ggplot(df_cat_ad, aes(x = spirit, text = paste('Contagem:', ..count..))) + geom_bar(fill = "#332f37") + labs(x = "Quantidades", y = "Frequência", title = "Gráfico das receitas que envolvem spirit")+
+ theme(plot.title= element_text(size=14,
+                               color="#332f37",
+                               face="bold"),
+      axis.title.x = element_text(face="bold",color="#332f37"),
+      axis.title.y = element_text(face="bold",color="#332f37"),
+       axis.text.x= element_text(face="bold"))
+```
+
+
+
+
+
